@@ -5,10 +5,9 @@ import time
 import datetime
 import sys
 
-# Default values (can be overridden via command line)
-DEFAULT_SERVER_HOST = '44.200.84.170'  # Change this once if needed
+DEFAULT_SERVER_HOST = '44.200.84.170'
 SERVER_PORT = 5000
-TIMEOUT = 2      # seconds
+TIMEOUT = 2
 MAX_RETRIES = 3
 
 def log(message):
@@ -48,9 +47,8 @@ def rpc_call(server_host, method, params, retry_count=0):
     except Exception as e:
         log(f"Connection/error: {e}")
     
-    # Retry logic
     if retry_count < MAX_RETRIES:
-        time.sleep(1)  # small backoff
+        time.sleep(1)
         return rpc_call(server_host, method, params, retry_count + 1)
     else:
         return "Failed after retries: no response"
@@ -59,7 +57,6 @@ def main(server_host):
     log("RPC Client starting...")
     log(f"Target server: {server_host}:{SERVER_PORT}")
     
-    # Example calls
     print("\n=== Calling add(5, 7) ===")
     result1 = rpc_call(server_host, "add", {"a": 5, "b": 7})
     print(f"Result: {result1}")
@@ -69,7 +66,6 @@ def main(server_host):
     print(f"Result: {result2}")
 
 if __name__ == "__main__":
-    # Determine which host to use
     if len(sys.argv) > 1:
         server_host = sys.argv[1]
         print(f"Using server IP from command line: {server_host}")

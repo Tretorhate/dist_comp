@@ -5,7 +5,7 @@ import threading
 import time
 import datetime
 
-HOST = '0.0.0.0'  # Listen on all interfaces
+HOST = '0.0.0.0'
 PORT = 5000
 FUNCTIONS = {}
 
@@ -18,10 +18,6 @@ def register(func):
 def add(a, b):
     return a + b
 
-# Optional: add more functions
-# @register
-# def reverse_string(s):
-#     return s[::-1]
 
 def log(message):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -49,23 +45,15 @@ def handle_client(conn, addr):
                     "error": "Unknown method"
                 }
             else:
-                # === For failure demo: artificial delay ===
-                # Uncomment the next line to simulate slow server (timeout demo)
-                # time.sleep(6)
-                
+                time.sleep(6)
                 result = FUNCTIONS[method](**params)
-                time.sleep(6)  # Simulate slow server
+                time.sleep(6)
                 response = {
                     "request_id": req_id,
                     "result": result,
                     "status": "OK"
                 }
                 
-            # === For failure demo: drop response ===
-            # Uncomment to simulate lost response
-            # log("Simulating dropped response...")
-            # return
-            
             conn.sendall(json.dumps(response).encode('utf-8'))
             log(f"Sent response for {req_id}: {response['result'] if response['status'] == 'OK' else response['error']}")
             
