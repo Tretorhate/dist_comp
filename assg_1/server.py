@@ -54,6 +54,7 @@ def handle_client(conn, addr):
                 # time.sleep(6)
                 
                 result = FUNCTIONS[method](**params)
+                time.sleep(6)  # Simulate slow server
                 response = {
                     "request_id": req_id,
                     "result": result,
