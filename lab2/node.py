@@ -30,9 +30,8 @@ PEERS: List[str] = []  # base URLs, e.g. http://10.0.1.12:8000
 DELAY_RULES = {
     # Example format:
     # ("A", "http://10.0.1.13:8002"): 2.0
+    # Configured dynamically in main() based on NODE_ID for Scenario A
 }
-# YOUR CODE HERE:
-# Add a delay rule to implement Scenario A (delay A -> C by ~2 seconds).
 
 
 def lamport_tick_local() -> int:
@@ -74,6 +73,32 @@ def apply_lww(key: str, value: Any, ts: int, origin: str) -> bool:
         return False
 
 
+def sync_from_peers() -> None:
+    """Request full store state from peers on startup to catch up after outage (Scenario C)."""
+    if not PEERS:
+        return
+    
+    for peer in PEERS:
+        try:
+            url = peer.rstrip("/") + "/status"
+            req = request.Request(url, method="GET")
+            with request.urlopen(req, timeout=2.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                if data.get("ok") and "store" in data:
+                    peer_store = data["store"]
+                    synced_count = 0
+                    for key, entry in peer_store.items():
+                        # Apply each entry from peer's store using LWW
+                        if apply_lww(key, entry["value"], entry["ts"], entry["origin"]):
+                            synced_count += 1
+                    if synced_count > 0:
+                        print(f"[{NODE_ID}] Synced {synced_count} keys from {peer}")
+                    break  # Only need to sync from one peer
+        except Exception as e:
+            print(f"[{NODE_ID}] WARN sync failed from {peer}: {e}")
+            continue
+
+
 def replicate_to_peers(key: str, value: Any, ts: int, origin: str, retries: int = 2, timeout_s: float = 2.0) -> None:
     """
     Send update to all peers via POST /replicate.
@@ -90,8 +115,7 @@ def replicate_to_peers(key: str, value: Any, ts: int, origin: str, retries: int 
 
         delay_s = DELAY_RULES.get((NODE_ID, peer), 0.0)
         if delay_s > 0:
-            # YOUR CODE HERE:
-            # Change how delay is applied to create reordering effects.
+            # Apply delay before sending to create reordering effects (Scenario A)
             time.sleep(delay_s)
 
         for attempt in range(retries + 1):
@@ -104,8 +128,9 @@ def replicate_to_peers(key: str, value: Any, ts: int, origin: str, retries: int 
                 if attempt == retries:
                     print(f"[{NODE_ID}] WARN replicate failed to {url}: {e}")
                 else:
-                    # YOUR CODE HERE (optional): replace fixed sleep with exponential backoff
-                    time.sleep(0.2 * (attempt + 1))
+                    # Exponential backoff: 1s, 2s, 4s, etc., capped at 60 seconds
+                    backoff_time = min(2 ** attempt, 60)
+                    time.sleep(backoff_time)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -197,7 +222,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     """Parse CLI args, set NODE_ID/PEERS, start HTTP server."""
-    global NODE_ID, PEERS, LAMPORT
+    global NODE_ID, PEERS, LAMPORT, DELAY_RULES
     parser = argparse.ArgumentParser()
     parser.add_argument("--id", required=True, help="Node ID: A, B, or C")
     parser.add_argument("--host", default="0.0.0.0")
@@ -209,8 +234,18 @@ def main():
     PEERS = [p.strip() for p in args.peers.split(",") if p.strip()]
     LAMPORT = 0
 
-    # YOUR CODE HERE (optional):
     # Configure DELAY_RULES based on NODE_ID to implement Scenario A deterministically.
+    # Delay A -> C by ~2 seconds to demonstrate delay/reorder effects
+    if NODE_ID == "A":
+        for peer in PEERS:
+            # Check if this is node C (typically on port 8002)
+            if ":8002" in peer:
+                DELAY_RULES[(NODE_ID, peer)] = 2.0
+                print(f"[{NODE_ID}] Configured delay: {NODE_ID} -> {peer} = 2.0s")
+
+    # Sync from peers on startup (Scenario C: temporary outage recovery)
+    if PEERS:
+        sync_from_peers()
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"[{NODE_ID}] listening on {args.host}:{args.port} peers={PEERS}")
