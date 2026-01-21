@@ -279,10 +279,22 @@ class Handler(BaseHTTPRequestHandler):
             return
         
         if self.path == "/vote":
-            result = handle_vote_request(int(body.get("term", 0)), str(body.get("candidate_id", "")))
+            # Validate required fields
+            term = int(body.get("term", 0))
+            candidate_id = str(body.get("candidate_id", ""))
+            if not candidate_id:
+                self._send(400, {"ok": False, "error": "candidate_id required"})
+                return
+            result = handle_vote_request(term, candidate_id)
             self._send(200, result)
         elif self.path == "/heartbeat":
-            result = handle_heartbeat(int(body.get("term", 0)), str(body.get("leader_id", "")))
+            # Validate required fields
+            term = int(body.get("term", 0))
+            leader_id = str(body.get("leader_id", ""))
+            if not leader_id:
+                self._send(400, {"ok": False, "error": "leader_id required"})
+                return
+            result = handle_heartbeat(term, leader_id)
             self._send(200, result)
         else:
             self._send(404, {"ok": False, "error": "not found"})
