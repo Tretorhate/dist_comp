@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """
-Lab 3 Starter: Raft-Lite Leader Election
+Lab 3: Raft-Lite Leader Election Implementation
 Distributed Computing • 3-5 nodes
 
-Endpoints:
-  GET  /status     — node state, term, current leader
-  POST /vote       — request vote {term, candidate_id}
-  POST /heartbeat  — leader heartbeat {term, leader_id}
-
-Look for '# YOUR CODE HERE' markers for required implementations.
+This node implements the Raft consensus leader election logic including:
+- Randomized election timeouts [cite: 62]
+- Majority-based voting [cite: 14]
+- Heartbeat-driven leader maintenance [cite: 19]
 """
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,9 +23,9 @@ from typing import List, Optional
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 
-ELECTION_TIMEOUT_MIN = 150  # ms
-ELECTION_TIMEOUT_MAX = 300  # ms
-HEARTBEAT_INTERVAL = 50     # ms
+ELECTION_TIMEOUT_MIN = 150  # ms [cite: 62]
+ELECTION_TIMEOUT_MAX = 300  # ms [cite: 62]
+HEARTBEAT_INTERVAL = 50     # ms [cite: 62]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Node State
@@ -38,13 +36,12 @@ class Role(Enum):
     CANDIDATE = "candidate"
     LEADER = "leader"
 
-
 lock = threading.Lock()
 
 NODE_ID: str = ""
 PEERS: List[str] = []
 
-# Persistent state (survives restarts in real Raft)
+# Persistent state
 current_term: int = 0
 voted_for: Optional[str] = None
 
@@ -61,83 +58,62 @@ def random_election_timeout() -> float:
     """Return random timeout in seconds."""
     return random.randint(ELECTION_TIMEOUT_MIN, ELECTION_TIMEOUT_MAX) / 1000.0
 
-
 def log(msg: str) -> None:
     """Print timestamped log message."""
     print(f"[{NODE_ID}] term={current_term} role={role.value} | {msg}")
 
-
 def become_follower(new_term: int, leader: Optional[str] = None) -> None:
-    """Transition to follower state."""
+    """Transition to follower state[cite: 17, 30]."""
     global role, current_term, voted_for, current_leader, last_heartbeat
-    with lock:
-        if new_term > current_term:
-            current_term = new_term
-            voted_for = None
-        role = Role.FOLLOWER
-        current_leader = leader
-        last_heartbeat = time.time()
+    if new_term > current_term:
+        current_term = new_term
+        voted_for = None
+    role = Role.FOLLOWER
+    current_leader = leader
+    last_heartbeat = time.time()
     log(f"became FOLLOWER (leader={leader})")
 
-
 def become_candidate() -> None:
-    """Transition to candidate state and start election."""
-    global role, current_term, voted_for, current_leader
-    with lock:
-        role = Role.CANDIDATE
-        current_term += 1
-        voted_for = NODE_ID  # vote for self
-        current_leader = None
+    """Transition to candidate state and start election[cite: 18, 22]."""
+    global role, current_term, voted_for, current_leader, last_heartbeat
+    role = Role.CANDIDATE
+    current_term += 1
+    voted_for = NODE_ID  # Vote for self [cite: 22]
+    current_leader = None
+    last_heartbeat = time.time() # Reset timer to allow election to run
     log("became CANDIDATE, starting election")
 
-
 def become_leader() -> None:
-    """Transition to leader state."""
+    """Transition to leader state[cite: 19, 23]."""
     global role, current_leader
-    with lock:
-        role = Role.LEADER
-        current_leader = NODE_ID
+    role = Role.LEADER
+    current_leader = NODE_ID
     log("became LEADER")
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RPC: Vote Request
 # ─────────────────────────────────────────────────────────────────────────────
 
 def handle_vote_request(term: int, candidate_id: str) -> dict:
-    """
-    Handle incoming vote request from a candidate.
-    
-    Raft rules:
-    - If term < current_term: reject
-    - If term > current_term: update term, become follower
-    - Grant vote if: haven't voted this term OR already voted for this candidate
-    
-    Returns: {term, vote_granted}
-    """
-    global current_term, voted_for, role, last_heartbeat
+    """Handle incoming vote request from a candidate[cite: 48]."""
+    global current_term, voted_for, last_heartbeat
     
     with lock:
-        # YOUR CODE HERE:
-        # 1. If term > current_term, update term and clear voted_for
-        # 2. Decide whether to grant vote
-        # 3. If granting vote, reset election timeout
-        
-        vote_granted = False  # Replace with your logic
-        
-        # Hint: Check if we can vote for this candidate
-        # - term must be >= current_term
-        # - voted_for must be None or candidate_id
-        
+        if term > current_term:
+            become_follower(term)
+            
+        vote_granted = False
+        # Grant vote if term is current and haven't voted or already voted for this candidate [cite: 28, 29]
+        if term == current_term and (voted_for is None or voted_for == candidate_id):
+            vote_granted = True
+            voted_for = candidate_id
+            last_heartbeat = time.time()  # Reset election timeout on granting vote
+            
         log(f"vote request from {candidate_id} term={term} -> granted={vote_granted}")
         return {"term": current_term, "vote_granted": vote_granted}
 
-
 def request_votes() -> int:
-    """
-    Send vote requests to all peers.
-    Returns number of votes received (including self-vote).
-    """
+    """Send vote requests to all peers[cite: 18, 22]."""
     votes = 1  # self-vote
     my_term = current_term
     
@@ -152,52 +128,44 @@ def request_votes() -> int:
             with request.urlopen(req, timeout=0.1) as resp:
                 data = json.loads(resp.read().decode())
                 
-                # YOUR CODE HERE:
-                # 1. Check response term - if higher, become follower
-                # 2. If vote granted, increment votes
-                
+                # Check response term - if higher, step down [cite: 30]
+                resp_term = data.get("term", 0)
+                if resp_term > my_term:
+                    with lock:
+                        become_follower(resp_term)
+                    return votes
+
                 if data.get("vote_granted"):
                     votes += 1
                     
         except Exception as e:
-            log(f"vote request to {peer} failed: {e}")
+            pass # Peer unreachable
     
     return votes
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RPC: Heartbeat
 # ─────────────────────────────────────────────────────────────────────────────
 
 def handle_heartbeat(term: int, leader_id: str) -> dict:
-    """
-    Handle incoming heartbeat from leader.
-    
-    Raft rules:
-    - If term < current_term: reject
-    - If term >= current_term: accept, become/stay follower
-    
-    Returns: {term, success}
-    """
-    global current_term, role, current_leader, last_heartbeat, voted_for
+    """Handle incoming heartbeat from leader[cite: 48]."""
+    global current_term, role, current_leader, last_heartbeat
     
     with lock:
-        # YOUR CODE HERE:
-        # 1. If term < current_term: reject (success=False)
-        # 2. If term >= current_term: accept heartbeat
-        #    - Update current_term if needed
-        #    - Become follower if not already
-        #    - Reset last_heartbeat time
-        #    - Update current_leader
+        # Reject if leader term is outdated [cite: 29]
+        if term < current_term:
+            log(f"heartbeat from {leader_id} term={term} -> REJECTED (current={current_term})")
+            return {"term": current_term, "success": False}
         
-        success = False  # Replace with your logic
+        # Accept heartbeat: update term and stay/become follower [cite: 24, 30]
+        success = True
+        become_follower(term, leader_id)
         
         log(f"heartbeat from {leader_id} term={term} -> success={success}")
         return {"term": current_term, "success": success}
 
-
 def send_heartbeats() -> None:
-    """Send heartbeat to all peers."""
+    """Send heartbeat to all peers[cite: 19]."""
     my_term = current_term
     
     for peer in PEERS:
@@ -211,79 +179,63 @@ def send_heartbeats() -> None:
             with request.urlopen(req, timeout=0.1) as resp:
                 data = json.loads(resp.read().decode())
                 
-                # If peer has higher term, step down
+                # If peer has higher term, step down immediately [cite: 19, 30]
                 if data.get("term", 0) > my_term:
-                    become_follower(data["term"])
+                    with lock:
+                        become_follower(data["term"])
                     return
                     
         except Exception as e:
             pass  # Peer unreachable, continue
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Background Loops
 # ─────────────────────────────────────────────────────────────────────────────
 
 def election_loop() -> None:
-    """
-    Background thread: monitors heartbeat timeout and triggers elections.
-    
-    Runs continuously. When follower times out, becomes candidate and
-    requests votes.
-    """
+    """Monitors heartbeat timeout and triggers elections[cite: 51]."""
     global last_heartbeat
     
     last_heartbeat = time.time()
     timeout = random_election_timeout()
     
     while True:
-        time.sleep(0.01)  # 10ms check interval
+        time.sleep(0.01)
         
         with lock:
             current_role = role
             elapsed = time.time() - last_heartbeat
         
         if current_role == Role.LEADER:
-            # Leaders don't need election timeout
             continue
         
-        if current_role == Role.FOLLOWER:
-            # YOUR CODE HERE:
-            # If elapsed > timeout, become candidate and start election
-            # Remember to reset timeout after election
-            
-            if elapsed > timeout:
-                # Start election
+        # Follower times out -> starts election [cite: 21]
+        if current_role == Role.FOLLOWER and elapsed > timeout:
+            with lock:
                 become_candidate()
-                timeout = random_election_timeout()
+            timeout = random_election_timeout()
         
-        if current_role == Role.CANDIDATE:
-            # YOUR CODE HERE:
-            # 1. Request votes from peers
-            # 2. If majority (> N/2), become leader
-            # 3. Otherwise, wait and retry with new timeout
-            
+        # Candidate logic: request votes and check majority [cite: 23]
+        if role == Role.CANDIDATE:
             votes = request_votes()
-            majority = (len(PEERS) + 1) // 2 + 1  # N/2 + 1
-            
+            majority = (len(PEERS) + 1) // 2 + 1
             log(f"got {votes}/{len(PEERS)+1} votes (need {majority})")
             
-            if votes >= majority:
-                become_leader()
-            else:
-                # Election failed, wait before retry
-                time.sleep(random_election_timeout())
-                with lock:
-                    if role == Role.CANDIDATE:
-                        # Still candidate, try again
-                        current_term += 1
-                        voted_for = NODE_ID
-
+            with lock:
+                if role == Role.CANDIDATE:
+                    if votes >= majority:
+                        become_leader()
+                    else:
+                        # Wait remaining timeout or a random one before checking again
+                        remaining = timeout - (time.time() - last_heartbeat)
+                        if remaining > 0:
+                            time.sleep(remaining)
+                        if role == Role.CANDIDATE:  # Recheck after sleep
+                            become_candidate()  # New term
+                            timeout = random_election_timeout()
 
 def leader_loop() -> None:
-    """
-    Background thread: sends heartbeats when leader.
-    """
+    """Sends heartbeats periodically when in leader state[cite: 19, 51]."""
     while True:
         time.sleep(HEARTBEAT_INTERVAL / 1000.0)
         
@@ -291,18 +243,13 @@ def leader_loop() -> None:
             if role != Role.LEADER:
                 continue
         
-        # YOUR CODE HERE:
-        # Send heartbeats to all peers
         send_heartbeats()
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HTTP Handler
 # ─────────────────────────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
-    """HTTP handler for /status, /vote, /heartbeat."""
-    
     def _send(self, code: int, obj: dict) -> None:
         data = json.dumps(obj).encode()
         self.send_response(code)
@@ -315,22 +262,16 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/status"):
             with lock:
                 self._send(200, {
-                    "ok": True,
-                    "node": NODE_ID,
-                    "term": current_term,
-                    "role": role.value,
-                    "leader": current_leader,
-                    "voted_for": voted_for,
-                    "peers": PEERS
+                    "ok": True, "node": NODE_ID, "term": current_term,
+                    "role": role.value, "leader": current_leader,
+                    "voted_for": voted_for, "peers": PEERS
                 })
             return
-        
         self._send(404, {"ok": False, "error": "not found"})
     
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(length) if length > 0 else b"{}"
-        
         try:
             body = json.loads(raw.decode())
         except:
@@ -338,30 +279,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         
         if self.path == "/vote":
-            term = int(body.get("term", 0))
-            candidate_id = str(body.get("candidate_id", ""))
-            if not candidate_id:
-                self._send(400, {"ok": False, "error": "candidate_id required"})
-                return
-            result = handle_vote_request(term, candidate_id)
+            result = handle_vote_request(int(body.get("term", 0)), str(body.get("candidate_id", "")))
             self._send(200, result)
-            return
-        
-        if self.path == "/heartbeat":
-            term = int(body.get("term", 0))
-            leader_id = str(body.get("leader_id", ""))
-            if not leader_id:
-                self._send(400, {"ok": False, "error": "leader_id required"})
-                return
-            result = handle_heartbeat(term, leader_id)
+        elif self.path == "/heartbeat":
+            result = handle_heartbeat(int(body.get("term", 0)), str(body.get("leader_id", "")))
             self._send(200, result)
-            return
-        
-        self._send(404, {"ok": False, "error": "not found"})
-    
-    def log_message(self, fmt, *args):
-        pass  # Suppress default logging
+        else:
+            self._send(404, {"ok": False, "error": "not found"})
 
+    def log_message(self, fmt, *args): pass
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Main
@@ -369,27 +295,22 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     global NODE_ID, PEERS, last_heartbeat
-    
     parser = argparse.ArgumentParser(description="Raft-Lite Node")
-    parser.add_argument("--id", required=True, help="Node ID (A, B, C, ...)")
+    parser.add_argument("--id", required=True)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--peers", default="", help="Comma-separated peer URLs")
+    parser.add_argument("--peers", default="")
     args = parser.parse_args()
     
     NODE_ID = args.id
     PEERS = [p.strip() for p in args.peers.split(",") if p.strip()]
     last_heartbeat = time.time()
     
-    # Start background threads
     threading.Thread(target=election_loop, daemon=True).start()
     threading.Thread(target=leader_loop, daemon=True).start()
     
     log(f"starting on {args.host}:{args.port} peers={PEERS}")
-    
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
-    server.serve_forever()
-
+    ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
 if __name__ == "__main__":
     main()
