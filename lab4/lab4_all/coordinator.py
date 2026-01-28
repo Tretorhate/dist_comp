@@ -11,6 +11,7 @@ from typing import List, Tuple
 lock = threading.Lock()
 PARTICIPANTS: List[str] = []
 COORD_WAL = "coordinator.wal"
+TX_LOG: dict = {}  # Track transactions
 
 def post_json(url: str, payload: dict) -> Tuple[int, dict]:
     data = json.dumps(payload).encode("utf-8")
@@ -19,14 +20,14 @@ def post_json(url: str, payload: dict) -> Tuple[int, dict]:
         return resp.status, json.loads(resp.read().decode("utf-8"))
 
 def log_decision(txid: str, decision: str):
-    """Persists the global decision before propagation[cite: 79]."""
+    """Persists the global decision before propagation."""
     with open(COORD_WAL, "a") as f:
         f.write(f"{txid} {decision}\n")
         f.flush()
         os.fsync(f.fileno())
 
 def robust_send(endpoint: str, payload: dict):
-    """Retries communication until all participants acknowledge[cite: 130]."""
+    """Retries communication until all participants acknowledge."""
     for p in PARTICIPANTS:
         url = p.rstrip("/") + endpoint
         success = False
@@ -39,7 +40,7 @@ def robust_send(endpoint: str, payload: dict):
                 time.sleep(1)
 
 def two_pc(txid: str, op: dict):
-    # Phase 1: Prepare [cite: 44]
+    # Phase 1: Prepare
     votes_yes = 0
     for p in PARTICIPANTS:
         try:
@@ -47,14 +48,16 @@ def two_pc(txid: str, op: dict):
             if resp.get("vote") == "YES": votes_yes += 1
         except Exception: pass
 
-    # Phase 2: Decision & Propagation [cite: 49]
+    # Phase 2: Decision & Propagation
     decision = "COMMIT" if votes_yes == len(PARTICIPANTS) else "ABORT"
     log_decision(txid, decision)
+    with lock:
+        TX_LOG[txid] = {"decision": decision, "op": op, "protocol": "2PC"}
     robust_send("/" + decision.lower(), {"txid": txid})
     return {"ok": True, "decision": decision}
 
 def three_pc(txid: str, op: dict):
-    # Phase 1: CanCommit [cite: 54]
+    # Phase 1: CanCommit
     votes_yes = 0
     for p in PARTICIPANTS:
         try:
@@ -64,18 +67,39 @@ def three_pc(txid: str, op: dict):
 
     if votes_yes < len(PARTICIPANTS):
         log_decision(txid, "ABORT")
+        with lock:
+            TX_LOG[txid] = {"decision": "ABORT", "op": op, "protocol": "3PC"}
         robust_send("/abort", {"txid": txid})
         return {"ok": True, "decision": "ABORT"}
 
-    # Phase 2: PreCommit [cite: 55]
+    # Phase 2: PreCommit
     robust_send("/precommit", {"txid": txid})
     
-    # Phase 3: DoCommit [cite: 56]
+    # Phase 3: DoCommit
     log_decision(txid, "COMMIT")
+    with lock:
+        TX_LOG[txid] = {"decision": "COMMIT", "op": op, "protocol": "3PC"}
     robust_send("/commit", {"txid": txid})
     return {"ok": True, "decision": "COMMIT"}
 
 class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/status":
+            with lock:
+                status = {
+                    "ok": True,
+                    "role": "coordinator",
+                    "participants": PARTICIPANTS,
+                    "transactions": TX_LOG
+                }
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(status).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+
     def do_POST(self):
         if self.path == "/tx/start":
             length = int(self.headers.get("Content-Length", "0"))
