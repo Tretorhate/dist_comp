@@ -6,10 +6,10 @@ WordCount MapReduce job running on Amazon EMR cluster with Hadoop streaming.
 
 ## Dataset
 
-- **Source:** Wikipedia Simple English dump (~33MB text)
+- **Source:** Wikipedia Simple English dump
 - **URL:** https://github.com/LGDoor/Dump-of-Simple-English-Wiki
-- **Records:** 254,110 lines
-- **Output:** 342,608 unique words
+- **Full dataset:** ~33MB, 254,110 lines
+- **Small dataset:** ~10,000 lines (for experiment)
 
 ## Cluster Configuration
 
@@ -42,13 +42,22 @@ hdfs dfs -mkdir -p /user/hadoop/input
 hdfs dfs -put corpus.txt /user/hadoop/input/
 ```
 
-### 4. Verify HDFS Upload
+### 4. Create Small Dataset for Experiment
+
+```bash
+head -10000 corpus.txt > corpus_small.txt
+hdfs dfs -mkdir -p /user/hadoop/input_small
+hdfs dfs -put corpus_small.txt /user/hadoop/input_small/
+```
+
+### 5. Verify HDFS Upload
 
 ```bash
 hdfs dfs -ls /user/hadoop/input/
+hdfs dfs -ls /user/hadoop/input_small/
 ```
 
-### 5. Run MapReduce Job
+### 6. Run MapReduce Job
 
 ```bash
 cd ~/dist_comp/lab5
@@ -56,32 +65,32 @@ chmod +x *.py
 
 STREAMING_JAR=$(find /usr/lib -name "hadoop-streaming*.jar" 2>/dev/null | head -1)
 
-hadoop jar $STREAMING_JAR \
-  -input /user/hadoop/input/ \
-  -output /user/hadoop/output/wordcount \
-  -mapper mapper.py \
-  -reducer reducer.py \
-  -file mapper.py \
-  -file reducer.py
+# Run on full dataset
+hadoop jar $STREAMING_JAR -input /user/hadoop/input/ -output /user/hadoop/output/wordcount_full -mapper mapper.py -reducer reducer.py -file mapper.py -file reducer.py
+
+# Run on small dataset
+hadoop jar $STREAMING_JAR -input /user/hadoop/input_small/ -output /user/hadoop/output/wordcount_small -mapper mapper.py -reducer reducer.py -file mapper.py -file reducer.py
 ```
 
-### 6. View Results
+### 7. View Results
 
 ```bash
 # List output files
-hdfs dfs -ls /user/hadoop/output/wordcount/
+hdfs dfs -ls /user/hadoop/output/wordcount_full/
+hdfs dfs -ls /user/hadoop/output/wordcount_small/
 
-# View sample
-hdfs dfs -head /user/hadoop/output/wordcount/part-00000
+# Top 20 most frequent words (full dataset)
+hdfs dfs -cat /user/hadoop/output/wordcount_full/part-* | sort -t$'\t' -k2 -nr | head -20
 
-# Top 20 most frequent words
-hdfs dfs -cat /user/hadoop/output/wordcount/part-* | sort -t$'\t' -k2 -nr | head -20
+# Top 20 most frequent words (small dataset)
+hdfs dfs -cat /user/hadoop/output/wordcount_small/part-* | sort -t$'\t' -k2 -nr | head -20
 ```
 
-### 7. Clear Output (if rerunning)
+### 8. Clear Output (if rerunning)
 
 ```bash
-hdfs dfs -rm -r /user/hadoop/output/wordcount
+hdfs dfs -rm -r /user/hadoop/output/wordcount_full
+hdfs dfs -rm -r /user/hadoop/output/wordcount_small
 ```
 
 ## Utility Commands
@@ -99,19 +108,27 @@ hdfs dfsadmin -report
 echo "hello world hello" | python3 mapper.py | sort | python3 reducer.py
 ```
 
-## Experiment: Scaling (2 vs 4 Core Nodes)
+## Experiment: Scenario B — Input Size Comparison
 
-| Nodes | Job Duration |
-| ----- | ------------ |
-| 2     | ~1 min       |
-| 4     | ~45 sec      |
+| Dataset | Size   | Lines   | Job Duration |
+| ------- | ------ | ------- | ------------ |
+| Small   | ~400KB | 10,000  | ~15-20 sec   |
+| Full    | ~33MB  | 254,110 | ~1 min       |
 
-**Observation:** Adding more core nodes reduces job execution time due to increased parallelism in the map phase.
+**Observation:** Larger input size increases job duration proportionally. The MapReduce framework splits input into chunks processed in parallel, but more data means more map tasks and more data to shuffle/reduce.
+
+**Key metrics from full dataset run:**
+
+- Map input records: 254,110
+- Map output records: 5,540,777
+- Reduce output records: 342,608 unique words
+- 8 map tasks, 4 reduce tasks
 
 ## Files
 
 - `mapper.py` - Emits (word, 1) pairs for each word
 - `reducer.py` - Aggregates counts by word
+- `README.md` - This file
 
 ## Author
 
