@@ -22,11 +22,16 @@ echo "[1/4] Verifying Spark installation..."
 spark-submit --version 2>/dev/null | head -3
 echo ""
 
-# Upload dataset to HDFS
-echo "[2/4] Uploading dataset to HDFS..."
-hdfs dfs -mkdir -p /user/hadoop/churn_input
-hdfs dfs -put -f ~/Churn_Modelling.csv /user/hadoop/churn_input/
-echo "Dataset uploaded:"
+# Upload dataset to HDFS (only if not exists)
+echo "[2/4] Checking dataset in HDFS..."
+if hdfs dfs -test -e /user/hadoop/churn_input/Churn_Modelling.csv 2>/dev/null; then
+    echo "Dataset already exists in HDFS, skipping upload."
+else
+    echo "Uploading dataset to HDFS..."
+    hdfs dfs -mkdir -p /user/hadoop/churn_input
+    hdfs dfs -put ~/Churn_Modelling.csv /user/hadoop/churn_input/
+    echo "Dataset uploaded."
+fi
 hdfs dfs -ls /user/hadoop/churn_input/
 echo ""
 
@@ -40,7 +45,7 @@ echo "[4/4] Running Spark ML Pipeline..."
 echo "=========================================="
 echo ""
 
-cd ~/lab6
+cd ~/dist_comp/lab6
 
 spark-submit \
     --master yarn \
